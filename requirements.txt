@@ -1,0 +1,5 @@
+discord.py
+ffmpeg
+yt-dlp
+python-dotenv
+pynacl
