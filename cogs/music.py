@@ -21,6 +21,7 @@ class Music(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.queues = {}
+        self.allowed_channels = {} 
 
     def get_queue(self, guild):
         if guild.id not in self.queues:
@@ -28,10 +29,9 @@ class Music(commands.Cog):
         return self.queues[guild.id]
 
     async def check_channel(self, ctx):
-        server_id = str(ctx.guild.id)
-        response = supabase.table('channels').select('channel_id').eq('server_id', server_id).execute()
-        if response.data:
-            allowed_channel_id = int(response.data[0]['channel_id'])
+        guild_id = ctx.guild.id
+        if guild_id in self.allowed_channels:
+            allowed_channel_id = self.allowed_channels[guild_id]
             if ctx.channel.id != allowed_channel_id:
                 await ctx.send(f"Commands can only be used in <#{allowed_channel_id}>.")
                 return False
@@ -39,33 +39,22 @@ class Music(commands.Cog):
 
     @commands.command(name="set")
     async def set(self, ctx):
-        server_id = str(ctx.guild.id)
-        channel_id = str(ctx.channel.id)
-
-        # Check if the server already exists in the table
-        response = supabase.table('channels').select('server_id').eq('server_id', server_id).execute()
-        
-        if response.data:
-            # Update the existing record
-            supabase.table('channels').update({'channel_id': channel_id}).eq('server_id', server_id).execute()
-        else:
-            # Insert a new record
-            supabase.table('channels').insert({'server_id': server_id, 'channel_id': channel_id}).execute()
-
+        guild_id = ctx.guild.id
+        self.allowed_channels[guild_id] = ctx.channel.id  
         await ctx.send(f"Commands can now only be used in this channel: {ctx.channel.mention}")
-
+    
     @commands.command(name="join")
     async def join(self, ctx):
-        if not await self.check_channel(ctx):
+        if not await self.check_channel(ctx):  # Check if the command is allowed in this channel
             return
 
-        if ctx.author.voice:
-            channel = ctx.author.voice.channel
+        if ctx.author.voice:  # Check if the user is in a voice channel
+            channel = ctx.author.voice.channel  # Get the user's voice channel
             if ctx.voice_client is None:
-                await channel.connect()
+                await channel.connect()  # Connect to the user's voice channel
                 await ctx.send(f"Joined {channel}")
             else:
-                await ctx.voice_client.move_to(channel)
+                await ctx.voice_client.move_to(channel) 
         else:
             await ctx.send("You are not in a voice channel.")
 
@@ -82,6 +71,8 @@ class Music(commands.Cog):
                 await ctx.send("You need to be in a voice channel to play music.")
                 return
 
+        queue = self.get_queue(ctx.guild)
+        # Add the song to the queue and start playing
         ydl_opts = {
             'format': 'bestaudio[ext=m4a]',
             'noplaylist': True,
@@ -98,7 +89,6 @@ class Music(commands.Cog):
                 audio_url = info['url']
                 title = info.get('title', 'Unknown Title')
 
-            queue = self.get_queue(ctx.guild)
             queue.append({
                 'title': title,
                 'url': audio_url,
@@ -123,9 +113,34 @@ class Music(commands.Cog):
                 discord.FFmpegPCMAudio(song['url'], before_options=FFMPEG_BEFORE_OPTS, options=FFMPEG_OPTS)
             )
             voice_client.play(source, after=lambda e: self.bot.loop.create_task(self.play_next(guild)))
-            await guild.text_channels[0].send(f"Now playing: {song['title']} requested by {song['requester'].mention}")
+
+            # Send the message in the set allowed channel
+            if guild.id in self.allowed_channels:
+                allowed_channel_id = self.allowed_channels[guild.id]
+                allowed_channel = self.bot.get_channel(allowed_channel_id)
+                if allowed_channel:
+                    await allowed_channel.send(f"Now playing: {song['title']} requested by {song['requester'].mention}")
         else:
             await voice_client.disconnect()
+
+    @commands.command(name="queue")
+    async def queue(self, ctx):
+        if not await self.check_channel(ctx):
+            return
+
+        queue = self.get_queue(ctx.guild)
+
+        if not queue:
+            await ctx.send("The queue is currently empty.")
+        else:
+            queue_list = [f"{index + 1}. {song['title']} (requested by {song['requester'].mention})" for index, song in enumerate(queue)]
+            message = "\n".join(queue_list)
+
+            if len(message) > 2000:
+                for chunk in [message[i:i + 2000] for i in range(0, len(message), 2000)]:
+                    await ctx.send(chunk)
+            else:
+                await ctx.send(f"**Current Queue:**\n{message}")
 
     @commands.command(name="skip")
     async def skip(self, ctx):
@@ -134,31 +149,11 @@ class Music(commands.Cog):
 
         voice_client = ctx.guild.voice_client
         if voice_client.is_playing():
-            voice_client.stop()
+            voice_client.stop()  
             await ctx.send("Skipped the current song.")
         else:
             await ctx.send("No song is currently playing.")
-    
-    @commands.command(name="queue")
-    async def queue(self, ctx):
-        """Display the current music queue."""
-        queue = self.get_queue(ctx.guild)
 
-        if not queue:
-            await ctx.send("The queue is currently empty.")
-        else:
-            # Create a list of song titles
-            queue_list = [f"{index + 1}. {song['title']} (requested by {song['requester'].mention})" for index, song in enumerate(queue)]
-            
-            # Split long queues into multiple messages if needed
-            message = "\n".join(queue_list)
-
-            # Ensure message fits within Discord's message character limit (2000 characters)
-            if len(message) > 2000:
-                for chunk in [message[i:i + 2000] for i in range(0, len(message), 2000)]:
-                    await ctx.send(chunk)
-            else:
-                await ctx.send(f"**Current Queue:**\n{message}")
     
 
 async def setup(bot):
