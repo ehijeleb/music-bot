@@ -2,6 +2,16 @@ import discord
 from discord.ext import commands
 import yt_dlp as youtube_dl
 import logging
+from supabase import create_client, Client
+import os
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+
 
 # FFmpeg options
 FFMPEG_BEFORE_OPTS = '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5'
@@ -10,27 +20,60 @@ FFMPEG_OPTS = '-vn'  # Disable video, only get audio
 class Music(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        self.queues = {} 
+        self.queues = {}
 
     def get_queue(self, guild):
         if guild.id not in self.queues:
             self.queues[guild.id] = []
         return self.queues[guild.id]
 
+    async def check_channel(self, ctx):
+        server_id = str(ctx.guild.id)
+        response = supabase.table('channels').select('channel_id').eq('server_id', server_id).execute()
+        if response.data:
+            allowed_channel_id = int(response.data[0]['channel_id'])
+            if ctx.channel.id != allowed_channel_id:
+                await ctx.send(f"Commands can only be used in <#{allowed_channel_id}>.")
+                return False
+        return True
+
+    @commands.command(name="set")
+    async def set(self, ctx):
+        server_id = str(ctx.guild.id)
+        channel_id = str(ctx.channel.id)
+
+        # Check if the server already exists in the table
+        response = supabase.table('channels').select('server_id').eq('server_id', server_id).execute()
+        
+        if response.data:
+            # Update the existing record
+            supabase.table('channels').update({'channel_id': channel_id}).eq('server_id', server_id).execute()
+        else:
+            # Insert a new record
+            supabase.table('channels').insert({'server_id': server_id, 'channel_id': channel_id}).execute()
+
+        await ctx.send(f"Commands can now only be used in this channel: {ctx.channel.mention}")
+
     @commands.command(name="join")
     async def join(self, ctx):
-        if ctx.author.voice:  # Check if the user is in a voice channel
-            channel = ctx.author.voice.channel  # Get the user's voice channel
+        if not await self.check_channel(ctx):
+            return
+
+        if ctx.author.voice:
+            channel = ctx.author.voice.channel
             if ctx.voice_client is None:
-                await channel.connect()  # Connect to the user's voice channel
+                await channel.connect()
                 await ctx.send(f"Joined {channel}")
             else:
-                await ctx.voice_client.move_to(channel) 
+                await ctx.voice_client.move_to(channel)
         else:
             await ctx.send("You are not in a voice channel.")
 
     @commands.command(name="play")
     async def play(self, ctx, *, query):
+        if not await self.check_channel(ctx):
+            return
+
         voice_client = ctx.guild.voice_client
         if not voice_client:
             if ctx.author.voice:
@@ -39,7 +82,6 @@ class Music(commands.Cog):
                 await ctx.send("You need to be in a voice channel to play music.")
                 return
 
-        # Use yt-dlp to extract the audio URL or search for the song if it's not a URL
         ydl_opts = {
             'format': 'bestaudio[ext=m4a]',
             'noplaylist': True,
@@ -48,17 +90,14 @@ class Music(commands.Cog):
 
         try:
             with youtube_dl.YoutubeDL(ydl_opts) as ydl:
-                # Check if input is a URL, otherwise search for the song
                 if "youtube.com" in query or "youtu.be" in query:
                     info = ydl.extract_info(query, download=False)
                 else:
-                    # Perform a search and get the first result
                     info = ydl.extract_info(f"ytsearch:{query}", download=False)['entries'][0]
 
                 audio_url = info['url']
                 title = info.get('title', 'Unknown Title')
 
-            # Add the song to the queue
             queue = self.get_queue(ctx.guild)
             queue.append({
                 'title': title,
@@ -67,34 +106,35 @@ class Music(commands.Cog):
             })
             await ctx.send(f"Added to queue: {title}")
 
-            # If the bot isn't already playing, start playing
             if not voice_client.is_playing():
                 await self.play_next(ctx.guild)
 
         except Exception as e:
             logging.error(f"Error downloading video: {e}")
             await ctx.send("There was an error downloading your video or searching for the song.")
+
     async def play_next(self, guild):
         voice_client = guild.voice_client
         queue = self.get_queue(guild)
 
         if len(queue) > 0:
-            # Get the next song
             song = queue.pop(0)
             source = discord.PCMVolumeTransformer(
                 discord.FFmpegPCMAudio(song['url'], before_options=FFMPEG_BEFORE_OPTS, options=FFMPEG_OPTS)
             )
             voice_client.play(source, after=lambda e: self.bot.loop.create_task(self.play_next(guild)))
-            channel = discord.utils.get(guild.text_channels, name="general")  # Replace "general" with your text channel
-            await channel.send(f"Now playing: {song['title']} requested by {song['requester'].mention}")
+            await guild.text_channels[0].send(f"Now playing: {song['title']} requested by {song['requester'].mention}")
         else:
             await voice_client.disconnect()
 
     @commands.command(name="skip")
     async def skip(self, ctx):
+        if not await self.check_channel(ctx):
+            return
+
         voice_client = ctx.guild.voice_client
         if voice_client.is_playing():
-            voice_client.stop()  # This will trigger the next song to play
+            voice_client.stop()
             await ctx.send("Skipped the current song.")
         else:
             await ctx.send("No song is currently playing.")
