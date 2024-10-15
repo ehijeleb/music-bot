@@ -138,6 +138,28 @@ class Music(commands.Cog):
             await ctx.send("Skipped the current song.")
         else:
             await ctx.send("No song is currently playing.")
+    
+    @commands.command(name="queue")
+    async def queue(self, ctx):
+        """Display the current music queue."""
+        queue = self.get_queue(ctx.guild)
+
+        if not queue:
+            await ctx.send("The queue is currently empty.")
+        else:
+            # Create a list of song titles
+            queue_list = [f"{index + 1}. {song['title']} (requested by {song['requester'].mention})" for index, song in enumerate(queue)]
+            
+            # Split long queues into multiple messages if needed
+            message = "\n".join(queue_list)
+
+            # Ensure message fits within Discord's message character limit (2000 characters)
+            if len(message) > 2000:
+                for chunk in [message[i:i + 2000] for i in range(0, len(message), 2000)]:
+                    await ctx.send(chunk)
+            else:
+                await ctx.send(f"**Current Queue:**\n{message}")
+    
 
 async def setup(bot):
     await bot.add_cog(Music(bot))
