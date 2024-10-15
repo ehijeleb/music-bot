@@ -13,14 +13,12 @@ class Music(commands.Cog):
         self.queues = {} 
 
     def get_queue(self, guild):
-        """Get or create the music queue for the guild."""
         if guild.id not in self.queues:
             self.queues[guild.id] = []
         return self.queues[guild.id]
 
     @commands.command(name="join")
     async def join(self, ctx):
-        """Join the user's voice channel."""
         if ctx.author.voice:  # Check if the user is in a voice channel
             channel = ctx.author.voice.channel  # Get the user's voice channel
             if ctx.voice_client is None:
@@ -32,8 +30,7 @@ class Music(commands.Cog):
             await ctx.send("You are not in a voice channel.")
 
     @commands.command(name="play")
-    async def play(self, ctx, *, url):
-        """Play a song from a YouTube URL or search term."""
+    async def play(self, ctx, *, query):
         voice_client = ctx.guild.voice_client
         if not voice_client:
             if ctx.author.voice:
@@ -42,7 +39,7 @@ class Music(commands.Cog):
                 await ctx.send("You need to be in a voice channel to play music.")
                 return
 
-        # Use yt-dlp to extract the audio URL
+        # Use yt-dlp to extract the audio URL or search for the song if it's not a URL
         ydl_opts = {
             'format': 'bestaudio[ext=m4a]',
             'noplaylist': True,
@@ -51,7 +48,13 @@ class Music(commands.Cog):
 
         try:
             with youtube_dl.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(url, download=False)
+                # Check if input is a URL, otherwise search for the song
+                if "youtube.com" in query or "youtu.be" in query:
+                    info = ydl.extract_info(query, download=False)
+                else:
+                    # Perform a search and get the first result
+                    info = ydl.extract_info(f"ytsearch:{query}", download=False)['entries'][0]
+
                 audio_url = info['url']
                 title = info.get('title', 'Unknown Title')
 
@@ -70,10 +73,8 @@ class Music(commands.Cog):
 
         except Exception as e:
             logging.error(f"Error downloading video: {e}")
-            await ctx.send("There was an error downloading your video.")
-
+            await ctx.send("There was an error downloading your video or searching for the song.")
     async def play_next(self, guild):
-        """Play the next song in the queue, if any."""
         voice_client = guild.voice_client
         queue = self.get_queue(guild)
 
@@ -91,7 +92,6 @@ class Music(commands.Cog):
 
     @commands.command(name="skip")
     async def skip(self, ctx):
-        """Skip the current song."""
         voice_client = ctx.guild.voice_client
         if voice_client.is_playing():
             voice_client.stop()  # This will trigger the next song to play
