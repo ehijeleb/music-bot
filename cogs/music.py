@@ -189,7 +189,6 @@ class Music(commands.Cog):
         current_index = 0
         total_bars = len(progress_bars)
 
-        # Keep updating the embed every 3 seconds until the song finishes
         while True:
             if current_index >= total_bars:
                 current_index = 0  # Reset the progress bar
@@ -201,10 +200,9 @@ class Music(commands.Cog):
                 color=discord.Color.green()
             )
             await self.current_embed.edit(embed=embed)
-            
-            # Increment the progress bar index and wait for 3 seconds before updating again
+
             current_index += 1
-            await asyncio.sleep(3)
+            await asyncio.sleep(1)
 
 
     async def play_next(self, guild):
