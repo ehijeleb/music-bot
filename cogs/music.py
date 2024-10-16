@@ -72,7 +72,7 @@ class Music(commands.Cog):
                 return
 
         queue = self.get_queue(ctx.guild)
-        # Add the song to the queue and start playing
+
         ydl_opts = {
             'format': 'bestaudio[ext=m4a]',
             'noplaylist': True,
@@ -89,19 +89,43 @@ class Music(commands.Cog):
                 audio_url = info['url']
                 title = info.get('title', 'Unknown Title')
 
-            queue.append({
-                'title': title,
-                'url': audio_url,
-                'requester': ctx.author,
-            })
-            await ctx.send(f"Added to queue: {title}")
+            song = {'title': title, 'url': audio_url, 'requester': ctx.author}
 
             if not voice_client.is_playing():
-                await self.play_next(ctx.guild)
+                # Play the song immediately if nothing is currently playing
+                await self.play_song(ctx.guild, song, voice_client)
+            else:
+                # If a song is already playing, add it to the queue
+                queue.append(song)
+                embed = discord.Embed(
+                    title="🎵 Added to Queue",
+                    description=f"**{song['title']}** requested by {song['requester'].mention}",
+                    color=discord.Color.blue()
+                )
+                await ctx.send(embed=embed)
 
         except Exception as e:
             logging.error(f"Error downloading video: {e}")
             await ctx.send("There was an error downloading your video or searching for the song.")
+
+    async def play_song(self, guild, song, voice_client):
+        """Play a song immediately without queueing."""
+        audio_url = song['url']
+        
+        # Play the song using FFmpeg
+        source = discord.PCMVolumeTransformer(discord.FFmpegPCMAudio(audio_url))
+        voice_client.play(source, after=lambda e: self.bot.loop.create_task(self.play_next(guild)))
+
+        # Send a message to indicate that the song is playing
+        allowed_channel_id = self.allowed_channels.get(guild.id)
+        allowed_channel = self.bot.get_channel(allowed_channel_id)
+        if allowed_channel:
+            embed = discord.Embed(
+                title="🎵 Now Playing",
+                description=f"**{song['title']}** requested by {song['requester'].mention}",
+                color=discord.Color.green()
+            )
+            await allowed_channel.send(embed=embed)
 
     async def play_next(self, guild):
         voice_client = guild.voice_client
@@ -109,17 +133,7 @@ class Music(commands.Cog):
 
         if len(queue) > 0:
             song = queue.pop(0)
-            source = discord.PCMVolumeTransformer(
-                discord.FFmpegPCMAudio(song['url'], before_options=FFMPEG_BEFORE_OPTS, options=FFMPEG_OPTS)
-            )
-            voice_client.play(source, after=lambda e: self.bot.loop.create_task(self.play_next(guild)))
-
-            # Send the message in the set allowed channel
-            if guild.id in self.allowed_channels:
-                allowed_channel_id = self.allowed_channels[guild.id]
-                allowed_channel = self.bot.get_channel(allowed_channel_id)
-                if allowed_channel:
-                    await allowed_channel.send(f"Now playing: {song['title']} requested by {song['requester'].mention}")
+            await self.play_song(guild, song, voice_client)
         else:
             await voice_client.disconnect()
 
@@ -133,15 +147,22 @@ class Music(commands.Cog):
         if not queue:
             await ctx.send("The queue is currently empty.")
         else:
-            queue_list = [f"{index + 1}. {song['title']} (requested by {song['requester'].mention})" for index, song in enumerate(queue)]
-            message = "\n".join(queue_list)
+            embed = discord.Embed(
+                title="🎶 Current Queue",
+                description="Here are the next songs in the queue:",
+                color=discord.Color.green()
+            )
 
-            if len(message) > 2000:
-                for chunk in [message[i:i + 2000] for i in range(0, len(message), 2000)]:
-                    await ctx.send(chunk)
-            else:
-                await ctx.send(f"**Current Queue:**\n{message}")
+            # Add each song in the queue as a field in the embed
+            for index, song in enumerate(queue, start=1):
+                embed.add_field(
+                    name=f"{index}. {song['title']}",
+                    value=f"Requested by {song['requester'].mention}",
+                    inline=False
+                )
 
+            await ctx.send(embed=embed)
+            
     @commands.command(name="skip")
     async def skip(self, ctx):
         if not await self.check_channel(ctx):
