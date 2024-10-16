@@ -21,7 +21,6 @@ class Music(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.queues = {}
-        self.allowed_channels = {} 
 
     def get_queue(self, guild):
         if guild.id not in self.queues:
@@ -30,18 +29,55 @@ class Music(commands.Cog):
 
     async def check_channel(self, ctx):
         guild_id = ctx.guild.id
-        if guild_id in self.allowed_channels:
-            allowed_channel_id = self.allowed_channels[guild_id]
+        
+        # Fetch the allowed channel from Supabase
+        allowed_channel_id = await self.fetch_allowed_channel(guild_id)
+        
+        if allowed_channel_id is not None:
+            # Ensure allowed_channel_id is cast to an integer for comparison
+            allowed_channel_id = int(allowed_channel_id)
+            
             if ctx.channel.id != allowed_channel_id:
+                # If the current channel is not the allowed one, send a message
                 await ctx.send(f"Commands can only be used in <#{allowed_channel_id}>.")
                 return False
+        
+        # If no allowed channel is set or the command is in the allowed channel, return True
         return True
+
+    
+    async def fetch_allowed_channel(self, guild_id):
+        response = supabase.table('channels').select('channel_id').eq('server_id', guild_id).execute()
+        if response.data and len(response.data) > 0:
+            return response.data[0]['channel_id']
+        return None
+
+    async def set_allowed_channel(self, guild_id, channel_id):
+        # Check if there is already an entry for this guild
+        response = supabase.table('channels').select('server_id').eq('server_id', guild_id).execute()
+        
+        # Add logging to verify the current data in the table
+        logging.info(f"Supabase select response for set_allowed_channel: {response.data}")
+        
+        if response.data and len(response.data) > 0:
+            # Update the existing entry
+            supabase.table('channels').update({'channel_id': channel_id}).eq('server_id', guild_id).execute()
+            logging.info(f"Updated allowed channel for guild {guild_id} to channel {channel_id}")
+        else:
+            # Insert a new entry
+            supabase.table('channels').insert({'server_id': guild_id, 'channel_id': channel_id}).execute()
+            logging.info(f"Inserted new allowed channel for guild {guild_id} to channel {channel_id}")
+
 
     @commands.command(name="set")
     async def set(self, ctx):
         guild_id = ctx.guild.id
-        self.allowed_channels[guild_id] = ctx.channel.id  
-        await ctx.send(f"Commands can now only be used in this channel: {ctx.channel.mention}")
+        channel_id = ctx.channel.id
+        
+        # Store the allowed channel in the database
+        await self.set_allowed_channel(guild_id, channel_id)
+        
+        await ctx.send(f"Commands will now only be allowed in this channel: {ctx.channel.mention}")
     
     @commands.command(name="join")
     async def join(self, ctx):
@@ -108,24 +144,34 @@ class Music(commands.Cog):
             logging.error(f"Error downloading video: {e}")
             await ctx.send("There was an error downloading your video or searching for the song.")
 
-    async def play_song(self, guild, song, voice_client):
-        """Play a song immediately without queueing."""
+    async def play_song(self, guild, song, voice_client, default_channel=None):
         audio_url = song['url']
-        
+
         # Play the song using FFmpeg
         source = discord.PCMVolumeTransformer(discord.FFmpegPCMAudio(audio_url))
         voice_client.play(source, after=lambda e: self.bot.loop.create_task(self.play_next(guild)))
 
-        # Send a message to indicate that the song is playing
-        allowed_channel_id = self.allowed_channels.get(guild.id)
+        # Fetch the allowed channel from Supabase
+        allowed_channel_id = await self.fetch_allowed_channel(guild.id)
         allowed_channel = self.bot.get_channel(allowed_channel_id)
-        if allowed_channel:
-            embed = discord.Embed(
-                title="🎵 Now Playing",
-                description=f"**{song['title']}** requested by {song['requester'].mention}",
-                color=discord.Color.green()
-            )
-            await allowed_channel.send(embed=embed)
+
+        # Fallback to the default channel if no allowed channel is set
+        if allowed_channel is None and default_channel is not None:
+            allowed_channel = default_channel
+
+        # Log if no channel is found
+        if allowed_channel is None:
+            logging.error(f"No allowed channel found for guild {guild.id}")
+            return
+
+        # Send a message to indicate that the song is playing
+        embed = discord.Embed(
+            title="🎵 Now Playing",
+            description=f"**{song['title']}** requested by {song['requester'].mention}",
+            color=discord.Color.green()
+        )
+        await allowed_channel.send(embed=embed)
+
 
     async def play_next(self, guild):
         voice_client = guild.voice_client
@@ -133,7 +179,13 @@ class Music(commands.Cog):
 
         if len(queue) > 0:
             song = queue.pop(0)
-            await self.play_song(guild, song, voice_client)
+            allowed_channel_id = await self.fetch_allowed_channel(guild.id)
+            allowed_channel = self.bot.get_channel(allowed_channel_id)
+
+            if allowed_channel is None:
+                logging.error(f"No allowed channel found for guild {guild.id}")
+            else:
+                await self.play_song(guild, song, voice_client, allowed_channel)
         else:
             await voice_client.disconnect()
 
