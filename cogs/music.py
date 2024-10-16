@@ -5,6 +5,7 @@ import logging
 from supabase import create_client, Client
 import os
 from dotenv import load_dotenv
+import asyncio
 
 # Load environment variables
 load_dotenv()
@@ -21,6 +22,8 @@ class Music(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.queues = {}
+        self.current_embed = None
+        self.updating_task = None
 
     def get_queue(self, guild):
         if guild.id not in self.queues:
@@ -170,22 +173,50 @@ class Music(commands.Cog):
             description=f"**{song['title']}** requested by {song['requester'].mention}",
             color=discord.Color.green()
         )
-        await allowed_channel.send(embed=embed)
+        self.current_embed = await allowed_channel.send(embed=embed)
+
+        if self.updating_task:
+            self.updating_task.cancel()
+        self.updating_task = self.bot.loop.create_task(self.update_embed_progress(song['title'], allowed_channel))
+
+    async def update_embed_progress(self, title, allowed_channel):
+        progress_bars = [
+            "▶️───────────", "─▶️──────────", "──▶️─────────",
+            "───▶️────────", "────▶️───────", "─────▶️──────",
+            "──────▶️─────", "───────▶️────", "────────▶️───",
+            "─────────▶️──", "──────────▶️─", "───────────▶️"
+        ]
+        current_index = 0
+        total_bars = len(progress_bars)
+
+        # Keep updating the embed every 3 seconds until the song finishes
+        while True:
+            if current_index >= total_bars:
+                current_index = 0  # Reset the progress bar
+
+            # Update the embed description with the new progress bar
+            embed = discord.Embed(
+                title="🎵 Now Playing",
+                description=f"**{title}**\n\nProgress: [{progress_bars[current_index]}]",
+                color=discord.Color.green()
+            )
+            await self.current_embed.edit(embed=embed)
+            
+            # Increment the progress bar index and wait for 3 seconds before updating again
+            current_index += 1
+            await asyncio.sleep(3)
 
 
     async def play_next(self, guild):
+        if self.updating_task:
+            self.updating_task.cancel()  # Stop updating the current embed
+
         voice_client = guild.voice_client
         queue = self.get_queue(guild)
 
         if len(queue) > 0:
             song = queue.pop(0)
-            allowed_channel_id = await self.fetch_allowed_channel(guild.id)
-            allowed_channel = self.bot.get_channel(allowed_channel_id)
-
-            if allowed_channel is None:
-                logging.error(f"No allowed channel found for guild {guild.id}")
-            else:
-                await self.play_song(guild, song, voice_client, allowed_channel)
+            await self.play_song(guild, song, voice_client)
         else:
             await voice_client.disconnect()
 
