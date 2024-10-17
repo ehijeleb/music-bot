@@ -23,6 +23,7 @@ class Music(commands.Cog):
         self.bot = bot
         self.queues = {}
         self.current_embed = None
+        self.disconnect_timer = {}  
         self.updating_task = None
 
     def get_queue(self, guild):
@@ -150,34 +151,44 @@ class Music(commands.Cog):
     async def play_song(self, guild, song, voice_client, default_channel=None):
         audio_url = song['url']
 
-        # Play the song using FFmpeg
-        source = discord.PCMVolumeTransformer(discord.FFmpegPCMAudio(audio_url))
-        voice_client.play(source, after=lambda e: self.bot.loop.create_task(self.play_next(guild)))
+        try:
+            # Play the song using FFmpeg
+            source = discord.PCMVolumeTransformer(discord.FFmpegPCMAudio(audio_url, before_options=FFMPEG_BEFORE_OPTS, options=FFMPEG_OPTS))
+            voice_client.play(source, after=lambda e: self.bot.loop.create_task(self.play_next(guild)))
 
-        # Fetch the allowed channel from Supabase
-        allowed_channel_id = await self.fetch_allowed_channel(guild.id)
-        allowed_channel = self.bot.get_channel(allowed_channel_id)
+            # Fetch the allowed channel from Supabase
+            allowed_channel_id = await self.fetch_allowed_channel(guild.id)
+            allowed_channel = self.bot.get_channel(int(allowed_channel_id))
 
-        # Fallback to the default channel if no allowed channel is set
-        if allowed_channel is None and default_channel is not None:
-            allowed_channel = default_channel
+            # Fallback to the default channel if no allowed channel is set
+            if allowed_channel is None and default_channel is not None:
+                allowed_channel = default_channel
 
-        # Log if no channel is found
-        if allowed_channel is None:
-            logging.error(f"No allowed channel found for guild {guild.id}")
-            return
+            # Log if no channel is found
+            if allowed_channel is None:
+                logging.error(f"No allowed channel found for guild {guild.id}")
+                return
 
-        # Send a message to indicate that the song is playing
-        embed = discord.Embed(
-            title="🎵 Now Playing",
-            description=f"**{song['title']}** requested by {song['requester'].mention}",
-            color=discord.Color.green()
-        )
-        self.current_embed = await allowed_channel.send(embed=embed)
+            # Send a message to indicate that the song is playing
+            embed = discord.Embed(
+                title="🎵 Now Playing",
+                description=f"**{song['title']}** requested by {song['requester'].mention}",
+                color=discord.Color.green()
+            )
+            self.current_embed = await allowed_channel.send(embed=embed)
 
-        if self.updating_task:
-            self.updating_task.cancel()
-        self.updating_task = self.bot.loop.create_task(self.update_embed_progress(song['title'], allowed_channel))
+            # Ensure that the embed is sent before updating
+            if self.current_embed:
+                if self.updating_task:
+                    self.updating_task.cancel()
+                self.updating_task = self.bot.loop.create_task(self.update_embed_progress(song['title'], allowed_channel))
+
+        except Exception as e:
+            logging.error(f"Error playing audio from URL '{audio_url}': {e}")
+            await self.send_error_message(guild, f"Could not play the song '{song['title']}' due to an error.")
+            await self.play_next(guild)  # Automatically play the next song on error
+
+
 
     async def update_embed_progress(self, title, allowed_channel):
         progress_bars = [
@@ -216,7 +227,43 @@ class Music(commands.Cog):
             song = queue.pop(0)
             await self.play_song(guild, song, voice_client)
         else:
-            await voice_client.disconnect()
+            # No more songs in the queue
+            await self.wait_before_disconnect(guild, voice_client)
+
+    async def wait_before_disconnect(self, guild, voice_client):
+        logging.info(f"Queue is empty, starting 3-minute wait before disconnecting in guild {guild.id}.")
+        
+        def check_if_song_added():
+            # Check if any new songs are added to the queue during the waiting period
+            return len(self.get_queue(guild)) > 0
+
+        try:
+            # Store the task so it can be canceled if a new song is added
+            self.disconnect_timer[guild.id] = self.bot.loop.create_task(asyncio.sleep(180))  # 3-minute wait
+
+            # Wait for 3 minutes or until a song is added
+            await asyncio.wait_for(self.disconnect_timer[guild.id], timeout=180)
+
+            if check_if_song_added():
+                logging.info(f"New song added, canceling disconnect timer in guild {guild.id}.")
+                return  # A song was added, so don't disconnect
+
+        except asyncio.TimeoutError:
+            # Timeout (3 minutes have passed without any new songs being added)
+            logging.info(f"Disconnecting from voice channel in guild {guild.id} due to inactivity.")
+            if voice_client and voice_client.is_connected():
+                await voice_client.disconnect()
+        finally:
+            # Remove the disconnect timer entry after it's done
+            if guild.id in self.disconnect_timer:
+                del self.disconnect_timer[guild.id]
+
+    async def cancel_disconnect(self, guild):
+        """Cancel the disconnect timer if a song is added to the queue."""
+        if guild.id in self.disconnect_timer:
+            self.disconnect_timer[guild.id].cancel()  # Cancel the scheduled disconnect
+            logging.info(f"Disconnect timer canceled in guild {guild.id} due to song being added.")
+            del self.disconnect_timer[guild.id]
 
     @commands.command(name="queue")
     async def queue(self, ctx):
@@ -256,7 +303,18 @@ class Music(commands.Cog):
         else:
             await ctx.send("No song is currently playing.")
 
-    
+    async def send_error_message(self, guild, message):
+        allowed_channel_id = await self.fetch_allowed_channel(guild.id)
+        allowed_channel = self.bot.get_channel(int(allowed_channel_id)) if allowed_channel_id else None
+
+        if allowed_channel:
+            embed = discord.Embed(
+                title="⚠️ Error",
+                description=message,
+                color=discord.Color.red()
+            )
+            await allowed_channel.send(embed=embed)
+
 
 async def setup(bot):
     await bot.add_cog(Music(bot))
