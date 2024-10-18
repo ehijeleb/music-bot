@@ -315,6 +315,42 @@ class Music(commands.Cog):
             )
             await allowed_channel.send(embed=embed)
 
+    @commands.command(name="pause")
+    async def pause(self, ctx):
+        """Pauses the currently playing song."""
+        if not await self.check_channel(ctx):
+            return
+
+        voice_client = ctx.guild.voice_client
+        if voice_client and voice_client.is_playing():
+            voice_client.pause()
+            embed = discord.Embed(
+                title="⏸️ Paused",
+                description="The song has been paused. Use `!resume` to continue playing.",
+                color=discord.Color.yellow()
+            )
+            await ctx.send(embed=embed)
+        else:
+            await ctx.send("No song is currently playing.")
+
+    @commands.command(name="resume")
+    async def resume(self, ctx):
+        """Resumes the currently paused song."""
+        if not await self.check_channel(ctx):
+            return
+
+        voice_client = ctx.guild.voice_client
+        if voice_client and voice_client.is_paused():
+            voice_client.resume()
+            embed = discord.Embed(
+                title="▶️ Resumed",
+                description="The song has been resumed.",
+                color=discord.Color.green()
+            )
+            await ctx.send(embed=embed)
+        else:
+            await ctx.send("No song is currently paused.")
+
 
 async def setup(bot):
     await bot.add_cog(Music(bot))
