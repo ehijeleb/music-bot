@@ -189,7 +189,7 @@ class Music(commands.Cog):
                 return
 
             # Create the control buttons and pass ctx to MusicControlView
-            view = MusicControlView(self.bot, ctx)
+            view = MusicControlView(self.bot, ctx, voice_client)
 
             # If there's a previous "Now Playing" embed, reply to it with the new song info
             if self.current_embed:
