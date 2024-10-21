@@ -106,7 +106,7 @@ class Music(commands.Cog):
         voice_client = ctx.guild.voice_client
         if not voice_client:
             if ctx.author.voice:
-                await ctx.author.voice.channel.connect()
+                voice_client = await ctx.author.voice.channel.connect()
             else:
                 await ctx.send("You need to be in a voice channel to play music.")
                 return
