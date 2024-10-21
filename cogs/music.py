@@ -6,6 +6,7 @@ from supabase import create_client, Client
 import os
 from dotenv import load_dotenv
 import asyncio
+from .music_controls import MusicControlView
 
 # Load environment variables
 load_dotenv()
@@ -135,7 +136,7 @@ class Music(commands.Cog):
 
                         if not voice_client.is_playing():
                             # Play the song immediately if nothing is currently playing
-                            await self.play_song(ctx.guild, song, voice_client)
+                            await self.play_song(ctx.guild, song, voice_client, ctx)
                         else:
                             # If a song is already playing, add it to the queue
                             queue.append(song)
@@ -163,10 +164,13 @@ class Music(commands.Cog):
             logging.error(f"Error during search or extraction: {e}")
             await ctx.send("There was an error performing the search.")
 
-    async def play_song(self, guild, song, voice_client, default_channel=None):
+    async def play_song(self, guild, song, voice_client, ctx, default_channel=None):
         audio_url = song['url']
 
         try:
+            # Store the context so play_next can access it
+            self.current_ctx = ctx
+
             # Play the song using FFmpeg and call play_next after the song finishes
             source = discord.PCMVolumeTransformer(discord.FFmpegPCMAudio(audio_url, before_options=FFMPEG_BEFORE_OPTS, options=FFMPEG_OPTS))
             voice_client.play(source, after=lambda e: self.bot.loop.create_task(self.play_next(guild)))
@@ -184,6 +188,9 @@ class Music(commands.Cog):
                 logging.error(f"No allowed channel found for guild {guild.id}")
                 return
 
+            # Create the control buttons and pass ctx to MusicControlView
+            view = MusicControlView(self.bot, ctx)
+
             # If there's a previous "Now Playing" embed, reply to it with the new song info
             if self.current_embed:
                 new_embed = discord.Embed(
@@ -192,8 +199,8 @@ class Music(commands.Cog):
                     color=discord.Color.green()
                 )
 
-                # Reply to the previous "Now Playing" embed
-                new_message = await self.current_embed.reply(embed=new_embed)
+                # Reply to the previous "Now Playing" embed with buttons
+                new_message = await self.current_embed.reply(embed=new_embed, view=view)
 
                 # Delete the original "Now Playing" embed after replying to it
                 await self.current_embed.delete()
@@ -207,7 +214,7 @@ class Music(commands.Cog):
                     description=f"**{song['title']}** requested by {song['requester'].mention}",
                     color=discord.Color.green()
                 )
-                self.current_embed = await allowed_channel.send(embed=embed)
+                self.current_embed = await allowed_channel.send(embed=embed, view=view)
 
             # Ensure that the embed is updated before starting the progress update
             if self.current_embed:
@@ -219,6 +226,7 @@ class Music(commands.Cog):
             logging.error(f"Error playing audio from URL '{audio_url}': {e}")
             await self.send_error_message(guild, f"Could not play the song '{song['title']}' due to an error.")
             await self.play_next(guild)  # Automatically play the next song on error
+
 
 
 
@@ -252,10 +260,16 @@ class Music(commands.Cog):
         queue = self.get_queue(guild)
 
         if len(queue) > 0:
+            # Get the next song from the queue
             song = queue.pop(0)
-            await self.play_song(guild, song, voice_client)
+
+            # Use the stored context from the previous song
+            ctx = self.current_ctx  # Assuming self.current_ctx is set when play_song is called
+
+            # Play the next song in the queue
+            await self.play_song(guild, song, voice_client, ctx)
         else:
-            # No more songs in the queue
+            # No more songs in the queue, disconnect after a timeout
             await self.wait_before_disconnect(guild, voice_client)
 
     async def cancel_disconnect(self, guild):
