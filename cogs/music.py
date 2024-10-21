@@ -167,7 +167,7 @@ class Music(commands.Cog):
         audio_url = song['url']
 
         try:
-            # Play the song using FFmpeg
+            # Play the song using FFmpeg and call play_next after the song finishes
             source = discord.PCMVolumeTransformer(discord.FFmpegPCMAudio(audio_url, before_options=FFMPEG_BEFORE_OPTS, options=FFMPEG_OPTS))
             voice_client.play(source, after=lambda e: self.bot.loop.create_task(self.play_next(guild)))
 
@@ -184,15 +184,32 @@ class Music(commands.Cog):
                 logging.error(f"No allowed channel found for guild {guild.id}")
                 return
 
-            # Send a message to indicate that the song is playing
-            embed = discord.Embed(
-                title="🎵 Now Playing",
-                description=f"**{song['title']}** requested by {song['requester'].mention}",
-                color=discord.Color.green()
-            )
-            self.current_embed = await allowed_channel.send(embed=embed)
+            # If there's a previous "Now Playing" embed, reply to it with the new song info
+            if self.current_embed:
+                new_embed = discord.Embed(
+                    title="🎵 Now Playing",
+                    description=f"**{song['title']}** requested by {song['requester'].mention}",
+                    color=discord.Color.green()
+                )
 
-            # Ensure that the embed is sent before updating
+                # Reply to the previous "Now Playing" embed
+                new_message = await self.current_embed.reply(embed=new_embed)
+
+                # Delete the original "Now Playing" embed after replying to it
+                await self.current_embed.delete()
+
+                # Update self.current_embed to the new message
+                self.current_embed = new_message
+            else:
+                # If there's no previous embed, send a new one and store it
+                embed = discord.Embed(
+                    title="🎵 Now Playing",
+                    description=f"**{song['title']}** requested by {song['requester'].mention}",
+                    color=discord.Color.green()
+                )
+                self.current_embed = await allowed_channel.send(embed=embed)
+
+            # Ensure that the embed is updated before starting the progress update
             if self.current_embed:
                 if self.updating_task:
                     self.updating_task.cancel()
@@ -206,29 +223,25 @@ class Music(commands.Cog):
 
 
     async def update_embed_progress(self, title, allowed_channel):
-        progress_bars = [
-            "▶️───────────", "─▶️──────────", "──▶️─────────",
-            "───▶️────────", "────▶️───────", "─────▶️──────",
-            "──────▶️─────", "───────▶️────", "────────▶️───",
-            "─────────▶️──", "──────────▶️─", "───────────▶️"
-        ]
+        sand_timer_frames = ["⏳", "⌛", "⏳", "⌛"]
         current_index = 0
-        total_bars = len(progress_bars)
+        total_frames = len(sand_timer_frames)
 
         while True:
-            if current_index >= total_bars:
-                current_index = 0  # Reset the progress bar
+            if current_index >= total_frames:
+                current_index = 0  # Reset the animation cycle
 
-            # Update the embed description with the new progress bar
+            # Update the embed with the sand timer
             embed = discord.Embed(
                 title="🎵 Now Playing",
-                description=f"**{title}**\n\nProgress: [{progress_bars[current_index]}]",
+                description=f"**{title}**\n\n{sand_timer_frames[current_index]}",
                 color=discord.Color.green()
             )
             await self.current_embed.edit(embed=embed)
 
             current_index += 1
-            await asyncio.sleep(1)
+            await asyncio.sleep(0.5)  # Update every second
+
 
 
     async def play_next(self, guild):
@@ -244,34 +257,6 @@ class Music(commands.Cog):
         else:
             # No more songs in the queue
             await self.wait_before_disconnect(guild, voice_client)
-
-    async def wait_before_disconnect(self, guild, voice_client):
-        logging.info(f"Queue is empty, starting 3-minute wait before disconnecting in guild {guild.id}.")
-        
-        def check_if_song_added():
-            # Check if any new songs are added to the queue during the waiting period
-            return len(self.get_queue(guild)) > 0
-
-        try:
-            # Store the task so it can be canceled if a new song is added
-            self.disconnect_timer[guild.id] = self.bot.loop.create_task(asyncio.sleep(180))  # 3-minute wait
-
-            # Wait for 3 minutes or until a song is added
-            await asyncio.wait_for(self.disconnect_timer[guild.id], timeout=180)
-
-            if check_if_song_added():
-                logging.info(f"New song added, canceling disconnect timer in guild {guild.id}.")
-                return  # A song was added, so don't disconnect
-
-        except asyncio.TimeoutError:
-            # Timeout (3 minutes have passed without any new songs being added)
-            logging.info(f"Disconnecting from voice channel in guild {guild.id} due to inactivity.")
-            if voice_client and voice_client.is_connected():
-                await voice_client.disconnect()
-        finally:
-            # Remove the disconnect timer entry after it's done
-            if guild.id in self.disconnect_timer:
-                del self.disconnect_timer[guild.id]
 
     async def cancel_disconnect(self, guild):
         """Cancel the disconnect timer if a song is added to the queue."""
@@ -332,7 +317,6 @@ class Music(commands.Cog):
 
     @commands.command(name="pause")
     async def pause(self, ctx):
-        """Pauses the currently playing song."""
         if not await self.check_channel(ctx):
             return
 
@@ -350,7 +334,6 @@ class Music(commands.Cog):
 
     @commands.command(name="resume")
     async def resume(self, ctx):
-        """Resumes the currently paused song."""
         if not await self.check_channel(ctx):
             return
 
