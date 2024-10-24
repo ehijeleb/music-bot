@@ -129,20 +129,28 @@ class Music(commands.Cog):
                     info = ydl.extract_info(query, download=False)  # Extract the info directly from the URL
                     audio_url = info['url']
                     title = info.get('title', 'Unknown Title')
+                    duration = info.get('duration', None)  # Capture the duration
+                    thumbnail = info.get('thumbnail', None)  # Thumbnail for embed
             else:
                 # Treat as a search query
                 with youtube_dl.YoutubeDL(ydl_opts) as ydl:
                     search_result = ydl.extract_info(f"ytsearch:{query}", download=False)['entries'][0]
                     audio_url = search_result['url']
                     title = search_result.get('title', 'Unknown Title')
+                    duration = search_result.get('duration', None)
+                    thumbnail = search_result.get('thumbnail', None)
 
-            song = {'title': title, 'url': audio_url, 'requester': ctx.author}
+            song = {
+                'title': title,
+                'url': audio_url,
+                'requester': ctx.author,
+                'duration': duration,
+                'thumbnail': thumbnail
+            }
 
             if not voice_client.is_playing():
-                # Play the song immediately if nothing is currently playing
                 await self.play_song(ctx.guild, song, voice_client, ctx)
             else:
-                # If a song is already playing, add it to the queue
                 queue.append(song)
                 embed = discord.Embed(
                     title="🎵 Added to Queue",
@@ -160,7 +168,6 @@ class Music(commands.Cog):
         audio_url = song['url']
 
         try:
-            # Store the context so play_next can access it
             self.current_ctx = ctx
 
             # Play the song using FFmpeg and call play_next after the song finishes
@@ -180,39 +187,48 @@ class Music(commands.Cog):
                 logging.error(f"No allowed channel found for guild {guild.id}")
                 return
 
-            # Create the control buttons and pass ctx to MusicControlView
+            # Extract additional info about the song
+            song_duration = song.get('duration', None)  # Duration in seconds if available
+            if song_duration:
+                minutes, seconds = divmod(song_duration, 60)
+                duration_str = f"{minutes}:{seconds:02d}"
+            else:
+                duration_str = "Unknown duration"
+
+            # Create the embed with additional info
+            embed = discord.Embed(
+                title="🎵 Now Playing",
+                description=f"**[{song['title']}]({audio_url})**",
+                color=discord.Color.green()
+            )
+            embed.add_field(name="Requested By", value=song['requester'].mention, inline=True)
+            embed.add_field(name="Duration", value=duration_str, inline=True)
+
+            # Add a thumbnail if the song has one (e.g., from YouTube)
+            if song.get('thumbnail'):
+                embed.set_thumbnail(url=song['thumbnail'])
+
+            # Add footer with the requester's avatar
+            embed.set_footer(text=f"Requested by: {song['requester'].display_name}", icon_url=ctx.author.avatar.url)
+
             view = MusicControlView(self.bot, ctx, voice_client)
 
-            # If there's a previous "Now Playing" embed, reply to it with the new song info
+            # Send the embed message with buttons
             if self.current_embed:
-                new_embed = discord.Embed(
-                    title="🎵 Now Playing",
-                    description=f"**{song['title']}** requested by {song['requester'].mention}",
-                    color=discord.Color.green()
-                )
-
-                # Reply to the previous "Now Playing" embed with buttons
-                new_message = await self.current_embed.reply(embed=new_embed, view=view)
-
+                # If there's a previous "Now Playing" embed, reply to it with the new song info
+                new_message = await self.current_embed.reply(embed=embed, view=view)
                 # Delete the original "Now Playing" embed after replying to it
                 await self.current_embed.delete()
-
-                # Update self.current_embed to the new message
-                self.current_embed = new_message
             else:
-                # If there's no previous embed, send a new one and store it
-                embed = discord.Embed(
-                    title="🎵 Now Playing",
-                    description=f"**{song['title']}** requested by {song['requester'].mention}",
-                    color=discord.Color.green()
-                )
-                self.current_embed = await allowed_channel.send(embed=embed, view=view)
+                new_message = await allowed_channel.send(embed=embed, view=view)
 
-            # Ensure that the embed is updated before starting the progress update
-            if self.current_embed:
-                if self.updating_task:
-                    self.updating_task.cancel()
-                self.updating_task = self.bot.loop.create_task(self.update_embed_progress(song['title'], allowed_channel))
+            # Update self.current_embed to the new message
+            self.current_embed = new_message
+
+            # Start the hourglass progress animation
+            if self.updating_task:
+                self.updating_task.cancel()
+            self.updating_task = self.bot.loop.create_task(self.update_embed_progress(song['title'], allowed_channel))
 
         except Exception as e:
             logging.error(f"Error playing audio from URL '{audio_url}': {e}")
@@ -221,26 +237,38 @@ class Music(commands.Cog):
 
 
 
-
     async def update_embed_progress(self, title, allowed_channel):
-        sand_timer_frames = ["⏳", "⌛", "⏳", "⌛"]
+        sand_timer_frames = ["⏳", "⌛", "⏳", "⌛"]  # Hourglass animation frames
         current_index = 0
         total_frames = len(sand_timer_frames)
+
+        # Get the existing embed details (title, description, fields, etc.)
+        original_embed = self.current_embed.embeds[0]  # Get the first embed
 
         while True:
             if current_index >= total_frames:
                 current_index = 0  # Reset the animation cycle
 
-            # Update the embed with the sand timer
+            # Create a copy of the original embed to update the hourglass without modifying other fields
             embed = discord.Embed(
-                title="🎵 Now Playing",
-                description=f"**{title}**\n\n{sand_timer_frames[current_index]}",
-                color=discord.Color.green()
+                title=original_embed.title,
+                description=original_embed.description,
+                color=original_embed.color
             )
+
+            # Copy all fields from the original embed
+            for field in original_embed.fields:
+                embed.add_field(name=field.name, value=field.value, inline=field.inline)
+        
+            embed.description += f"\n\n{sand_timer_frames[current_index]}"
+            embed.set_thumbnail(url=original_embed.thumbnail.url if original_embed.thumbnail else None)
+            embed.set_footer(text=original_embed.footer.text, icon_url=original_embed.footer.icon_url)
+
             await self.current_embed.edit(embed=embed)
 
             current_index += 1
-            await asyncio.sleep(0.5)  # Update every second
+            await asyncio.sleep(1.5)  # Regular interval of 1.5 seconds
+
 
 
 
@@ -252,20 +280,18 @@ class Music(commands.Cog):
         queue = self.get_queue(guild)
 
         if len(queue) > 0:
-            # Get the next song from the queue
             song = queue.pop(0)
 
-            # Use the stored context from the previous song
-            ctx = self.current_ctx  # Assuming self.current_ctx is set when play_song is called
+            # Use the stored context for the next song
+            ctx = self.current_ctx  
 
-            # Play the next song in the queue
             await self.play_song(guild, song, voice_client, ctx)
         else:
             # No more songs in the queue, disconnect after a timeout
             await self.wait_before_disconnect(guild, voice_client)
 
+
     async def cancel_disconnect(self, guild):
-        """Cancel the disconnect timer if a song is added to the queue."""
         if guild.id in self.disconnect_timer:
             self.disconnect_timer[guild.id].cancel()  # Cancel the scheduled disconnect
             logging.info(f"Disconnect timer canceled in guild {guild.id} due to song being added.")
