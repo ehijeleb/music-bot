@@ -122,47 +122,39 @@ class Music(commands.Cog):
         }
 
         try:
-            # Try up to 5 search attempts
-            for i in range(1, 6):
-                try:
-                    with youtube_dl.YoutubeDL(ydl_opts) as ydl:
-                        # Use ytsearch to get a single result for each attempt
-                        search_result = ydl.extract_info(f"ytsearch:{query}", download=False)['entries'][0]
+            # Check if the query is a URL
+            if "youtube.com" in query or "youtu.be" in query:
+                # Handle as a URL
+                with youtube_dl.YoutubeDL(ydl_opts) as ydl:
+                    info = ydl.extract_info(query, download=False)  # Extract the info directly from the URL
+                    audio_url = info['url']
+                    title = info.get('title', 'Unknown Title')
+            else:
+                # Treat as a search query
+                with youtube_dl.YoutubeDL(ydl_opts) as ydl:
+                    search_result = ydl.extract_info(f"ytsearch:{query}", download=False)['entries'][0]
+                    audio_url = search_result['url']
+                    title = search_result.get('title', 'Unknown Title')
 
-                        audio_url = search_result['url']
-                        title = search_result.get('title', 'Unknown Title')
+            song = {'title': title, 'url': audio_url, 'requester': ctx.author}
 
-                        song = {'title': title, 'url': audio_url, 'requester': ctx.author}
+            if not voice_client.is_playing():
+                # Play the song immediately if nothing is currently playing
+                await self.play_song(ctx.guild, song, voice_client, ctx)
+            else:
+                # If a song is already playing, add it to the queue
+                queue.append(song)
+                embed = discord.Embed(
+                    title="🎵 Added to Queue",
+                    description=f"**{song['title']}** requested by {song['requester'].mention}",
+                    color=discord.Color.blue()
+                )
+                await ctx.send(embed=embed)
 
-                        if not voice_client.is_playing():
-                            # Play the song immediately if nothing is currently playing
-                            await self.play_song(ctx.guild, song, voice_client, ctx)
-                        else:
-                            # If a song is already playing, add it to the queue
-                            queue.append(song)
-                            embed = discord.Embed(
-                                title="🎵 Added to Queue",
-                                description=f"**{song['title']}** requested by {song['requester'].mention}",
-                                color=discord.Color.blue()
-                            )
-                            await ctx.send(embed=embed)
+        except youtube_dl.utils.DownloadError as e:
+            await ctx.send(f"Error processing the URL/query: {query}")
+            logging.error(f"Error downloading or playing: {e}")
 
-                        return  # Exit the loop after a successful play
-
-                except youtube_dl.utils.DownloadError as e:
-                    # Log the error and move on to the next result
-                    if 'Sign in to confirm your age' in str(e):
-                        await ctx.send(f"Attempt {i} failed due to age restriction for: **{query}**")
-                    else:
-                        await ctx.send(f"Attempt {i} failed for: **{query}**")
-                    logging.error(f"Error downloading or playing result {i} for query '{query}': {e}")
-
-            # If all attempts fail, notify the user
-            await ctx.send(f"All attempts to play **{query}** have failed.")
-
-        except Exception as e:
-            logging.error(f"Error during search or extraction: {e}")
-            await ctx.send("There was an error performing the search.")
 
     async def play_song(self, guild, song, voice_client, ctx, default_channel=None):
         audio_url = song['url']
